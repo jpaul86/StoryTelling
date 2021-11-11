@@ -1,0 +1,81 @@
+---
+title: "Storytelling"
+author: "Janosch Hoefer, 938969""
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: show  
+    highlight: tango
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message = FALSE)
+```
+
+```{r Libraries, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(eurostat)
+```
+
+## Data
+
+```{r Loading data, message=FALSE, warning=FALSE}
+clean_eurostat_cache()
+gas_supply <- get_eurostat("nrg_ind_343m") %>%  
+  label_eurostat(code = c("unit", "geo")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>% 
+  pivot_wider(names_from  = indic_nrg,
+              values_from = values) %>% 
+  rename(siec = product)
+
+gas_stock <- get_eurostat("nrg_stk_gasm", 
+                          filters = list(unit = "TJ_GCV")) %>% 
+  label_eurostat(code = c("unit", "geo")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>%
+  pivot_wider(names_from  = stk_flow,
+              values_from = values)
+
+gas_import <- get_eurostat("nrg_ti_gasm") %>% 
+  label_eurostat(code = c("unit", "geo", "partner")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>% 
+  relocate(partner, .after = partner_code) %>% 
+  filter(unit_code == "TJ_GCV") %>% 
+  rename(imp_values = values)
+
+gas_consumption <- get_eurostat("nrg_cb_gasm",
+                                filters = list(unit = "TJ_GCV")) %>%
+  label_eurostat(code = c("unit", "geo")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>% 
+  pivot_wider(names_from  = nrg_bal,
+              values_from = values)
+```
+
+## Questions
+
+
+
+```{r Joining the data}
+gas <- gas_supply %>% 
+  left_join(select(gas_import,!c("geo", "unit_code")), by = c("geo_code", "time", "siec")) %>%
+  mutate(imp_ratio = ifelse(Imports != 0, imp_values / Imports, NA)) # avoid Inf
+```
+
+
+
+```{r Gas Import from RU}
+gas %>% 
+  filter(partner_code == "RU" & 
+           time >= "2021-01-01" &
+           !(geo_code %in% c("EA","EU27_2020"))) %>% 
+  group_by(geo) %>% 
+  summarise("Imported" = mean(imp_ratio)) %>% 
+  slice_max(Imported, n=10)
+```
