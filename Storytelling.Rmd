@@ -79,3 +79,8 @@ gas %>%
   summarise("Imported" = mean(imp_ratio)) %>% 
   slice_max(Imported, n=10)
 ```
+
+
+```{r First Graph}
+
+```
