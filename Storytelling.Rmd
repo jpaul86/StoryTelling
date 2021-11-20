@@ -16,9 +16,20 @@ knitr::opts_chunk$set(warning=FALSE, message = FALSE)
 ```
 
 ```{r Libraries, include=FALSE}
+if(!require("eurostat")) install.packages("eurostat")
+if(!require("rnaturalearth")) install.packages("rnaturalearth")
+if(!require("rnaturalearthdata")) install.packages("rnaturalearthdata")
+if(!require("sf")) install.packages("sf")
+if(!require("smoothr")) install.packages("smoothr")
+
 library(tidyverse)
 library(ggplot2)
 library(eurostat)
+library(rnaturalearth)
+library(lubridate)
+library(sf)
+library(smoothr)
+sf::sf_use_s2(FALSE)
 ```
 
 ## Data
@@ -63,24 +74,91 @@ gas_consumption <- get_eurostat("nrg_cb_gasm",
 
 
 ```{r Joining the data}
-gas <- gas_supply %>% 
-  left_join(select(gas_import,!c("geo", "unit_code")), by = c("geo_code", "time", "siec")) %>%
-  mutate(imp_ratio = ifelse(Imports != 0, imp_values / Imports, NA)) # avoid Inf
+gas <- gas_consumption %>% 
+  left_join(select(gas_import, !c("geo", "unit_code")), 
+            by = c("geo_code", "time", "siec")) %>% 
+  mutate(year = year(time))
+
+gas <- gas %>% 
+  left_join(select(gas_supply, c("geo_code", "time", "siec", "Closing Stocks", "Supply")), 
+            by = c("geo_code", "time", "siec"))
+```
+
+
+```{r  Getting the geodata}
+# Get geodata for EU -----------------------------------------------------------
+geodata <- ne_countries(scale = 50, 
+                        type = 'countries', 
+                        continent = 'europe', 
+                        returnclass = 'sf') %>% 
+  filter(scalerank == 1, 
+         !is.na(wb_a2), 
+         !wb_a2 %in% c("RU", "IS")) %>% 
+  select(wb_a2, geometry)
+
+# Remove small islands ---------------------------------------------------------
+df_temp <- data.frame(countries =  c("PT", "FR", "ES", "NL", "NO"),
+                      sizes <- c(1000, 100000, 3000, 500, 50000))
+
+for (i in seq_len(nrow(df_temp))) {
+  p <- geodata %>% 
+    filter(wb_a2 == df_temp[i,1]) %>% 
+    drop_crumbs(threshold = units::set_units(df_temp[i,2], km^2)) # smoothr
+  
+  geodata[which(geodata$wb_a2 == df_temp[i,1]),] = p
+}
+
+rm(i,p)
 ```
 
 
 
-```{r Gas Import from RU}
-gas %>% 
+```{r Gas Import from RU in EU}
+gas_from_rus <- gas %>% 
+  mutate(imp_ratio = ifelse(Imports != 0, imp_values / Imports, NA)) %>%  # avoid Inf
   filter(partner_code == "RU" & 
-           time >= "2021-01-01" &
-           !(geo_code %in% c("EA","EU27_2020"))) %>% 
-  group_by(geo) %>% 
-  summarise("Imported" = mean(imp_ratio)) %>% 
-  slice_max(Imported, n=10)
+         !(geo_code %in% c("EA","EU27_2020", "EA19"))) %>% 
+  group_by(geo, year) %>% 
+  mutate("imported_year" = mean(imp_ratio))
+
+gas_from_rus %>% 
+  distinct(year, .keep_all = TRUE) %>% 
+  filter(year == 2021) %>% 
+  full_join(geodata, by = c("geo_code" = "wb_a2")) %>% 
+  ggplot() +
+  geom_sf(mapping = aes(fill = imported_year, geometry = geometry))
+```
+
+```{r}
+gas_de <- gas %>% 
+  filter(geo_code == "DE",
+         year > 2014) %>% 
+  distinct(time, .keep_all = TRUE)
+  
+gas_de %>% ggplot() +
+  geom_line(aes(time, `Closing Stocks`)) +
+  geom_col(aes(time, `Stock changes - as defined in MOS GAS`))
+  #geom_line(aes(time, Supply))
+```
+
+```{r}
+head(gas_de)
+
+gas_de %>% 
+  ggplot() +
+  geom_line(aes(time, `Inland consumption - observed`)) +
+  geom_line(aes(time, Imports))
 ```
 
 
-```{r First Graph}
 
+```{r}
+gas_from_rus %>% 
+  mutate(Imports = Imports - imp_values) %>% 
+  pivot_longer(cols = c(Imports,imp_values), names_to = "import_type", values_to = "import_value") %>% 
+  filter(geo_code == "DE",
+         year >= 2020) %>% 
+  ggplot() +
+    geom_col(aes(time, import_value, fill = forcats::fct_rev(import_type)), position = "stack")
 ```
+
