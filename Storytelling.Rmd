@@ -139,6 +139,8 @@ gas_de %>% ggplot() +
   geom_line(aes(time, `Closing Stocks`)) +
   geom_col(aes(time, `Stock changes - as defined in MOS GAS`))
   #geom_line(aes(time, Supply))
+
+  
 ```
 
 ```{r}
