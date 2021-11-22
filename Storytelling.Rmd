@@ -1,6 +1,6 @@
 ---
 title: "Storytelling"
-author: "Janosch Hoefer, 938969""
+author: "Janosch Hoefer, 938969"
 output: 
   html_document:
     toc: true
@@ -15,27 +15,52 @@ output:
 knitr::opts_chunk$set(warning=FALSE, message = FALSE)
 ```
 
-```{r Libraries, include=FALSE}
+```{r Libraries, include=TRUE}
 if(!require("eurostat")) install.packages("eurostat")
 if(!require("rnaturalearth")) install.packages("rnaturalearth")
 if(!require("rnaturalearthdata")) install.packages("rnaturalearthdata")
 if(!require("sf")) install.packages("sf")
 if(!require("smoothr")) install.packages("smoothr")
+if(!require("cowplot")) install.packages("cowplot")
 
+# Essentials
 library(tidyverse)
-library(ggplot2)
+library(lubridate)
+# Data
 library(eurostat)
 library(rnaturalearth)
-library(lubridate)
+# Graphs
+library(ggplot2)
 library(sf)
 library(smoothr)
+library(cowplot)
 sf::sf_use_s2(FALSE)
 ```
 
 ## Data
 
 ```{r Loading data, message=FALSE, warning=FALSE}
-clean_eurostat_cache()
+clean_eurostat_cache() # clean local cache to get newest data
+
+# Main Table (monthly data) ----------------------------------------------------
+gas_consumption <- get_eurostat("nrg_cb_gasm",
+                                filters = list(unit = "TJ_GCV")) %>%
+  label_eurostat(code = c("unit", "geo")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>% 
+  pivot_wider(names_from  = nrg_bal,
+              values_from = values)
+
+# Gas imported by different countries (monthly data) ---------------------------
+gas_import <- get_eurostat("nrg_ti_gasm") %>% 
+  label_eurostat(code = c("unit", "geo", "partner")) %>% 
+  select(!unit) %>% 
+  relocate(geo, .after = geo_code) %>% 
+  relocate(partner, .after = partner_code) %>% 
+  filter(unit_code == "TJ_GCV") %>% 
+  rename("imp_values" = values)
+
+# Gas stored per country (monthly data) ----------------------------------------
 gas_supply <- get_eurostat("nrg_ind_343m") %>%  
   label_eurostat(code = c("unit", "geo")) %>% 
   select(!unit) %>% 
@@ -44,33 +69,18 @@ gas_supply <- get_eurostat("nrg_ind_343m") %>%
               values_from = values) %>% 
   rename(siec = product)
 
-gas_stock <- get_eurostat("nrg_stk_gasm", 
-                          filters = list(unit = "TJ_GCV")) %>% 
-  label_eurostat(code = c("unit", "geo")) %>% 
-  select(!unit) %>% 
-  relocate(geo, .after = geo_code) %>%
-  pivot_wider(names_from  = stk_flow,
-              values_from = values)
+# Getting annual data for final consumption ------------------------------------
+long_name <- "Oil and petroleum products (excluding biofuel portion)"
+short_name <- "Oil and petroleum products"
 
-gas_import <- get_eurostat("nrg_ti_gasm") %>% 
-  label_eurostat(code = c("unit", "geo", "partner")) %>% 
-  select(!unit) %>% 
-  relocate(geo, .after = geo_code) %>% 
-  relocate(partner, .after = partner_code) %>% 
-  filter(unit_code == "TJ_GCV") %>% 
-  rename(imp_values = values)
-
-gas_consumption <- get_eurostat("nrg_cb_gasm",
-                                filters = list(unit = "TJ_GCV")) %>%
+energy <- get_eurostat("nrg_ind_fecf") %>%
   label_eurostat(code = c("unit", "geo")) %>% 
-  select(!unit) %>% 
-  relocate(geo, .after = geo_code) %>% 
-  pivot_wider(names_from  = nrg_bal,
-              values_from = values)
+  mutate(year = year(time),
+         siec = case_when(siec == long_name ~ short_name,
+                          TRUE ~ siec))
+
+rm(long_name, short_name)
 ```
-
-## Questions
-
 
 
 ```{r Joining the data}
@@ -111,23 +121,203 @@ for (i in seq_len(nrow(df_temp))) {
 rm(i,p)
 ```
 
+## Questions
+### Energy consumption by private housholds
+
+
+```{r EU & Germany Energy Source - Private houshold}
+
+energy$siec <- factor(energy$siec)
+
+year_des <- 2019
+nrg_code <- "Final consumption - other sectors - households - energy use"
+inner_label_size <- 4.5
+
+energy_filtered <- energy %>% 
+  filter(siec != "Total",
+         nrg_bal  == nrg_code,
+         year     == year_des) %>% 
+  group_by(geo_code, nrg_bal, year) %>% 
+  arrange(desc(values)) %>% 
+  mutate(ypos = case_when(values <= 10 ~ NA_real_,
+                          TRUE ~ cumsum(values) - 0.5 * values))
+
+# Energy sources in EU ---------------------------------------------------------
+household_eu <- energy_filtered %>% 
+  filter(geo_code == "EU27_2020") %>% 
+  # Plot -----------------------
+  ggplot(aes(x = "", y = values, fill = fct_reorder(siec, values))) +
+  geom_bar(stat  ="identity", 
+           width = 1, 
+           color = "white") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  theme(legend.position = "none") +
+  geom_text(aes(y = ypos, label = values), 
+            color = "white", 
+            size = inner_label_size)
+
+
+# Energy source in Germany -----------------------------------------------------
+household_de <- energy_filtered %>% 
+  filter(geo_code == "DE") %>% 
+  # Plot --------------------
+  ggplot(aes(x = "", y = values, fill = fct_reorder(siec, values))) +
+  geom_bar(stat ="identity", 
+           width = 1,
+           color = "white") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  theme(legend.position = "none") + 
+  geom_text(aes(y = ypos, label = values), 
+            color = "white", 
+            size = inner_label_size)
+
+# Enery sources label ----------------------------------------------------------
+household_label <- energy_filtered %>% 
+  filter(nrg_bal  == nrg_code,
+         year     == year_des,
+         geo_code == "DE") %>% 
+  # Plot --------------------
+  ggplot(aes(x = "", y = values, fill = fct_reorder(siec, values))) +
+  geom_bar(stat ="identity", 
+           width = 1,
+           color = "white") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  # Only showing legend -----
+  theme(legend.position = "bottom") +
+  guides(fill = guide_legend(title = "Energy source",
+                             title.position = "top",
+                             reverse = TRUE))
+
+# Combine plots using cowplot --------------------------------------------------
+# Create title ------------------------
+title <- ggdraw() +
+  draw_label(
+    "Share of energy sources for private housholds (2019)",
+    fontface = "bold", x = 0, hjust = 0) +
+  theme(
+    plot.margin = margin(t = 0,
+                         r = 0,
+                         b = 0,
+                         l = 8))
+# Combine both pie charts -------------
+upper_row <- plot_grid(household_eu, 
+                       household_de, 
+                       labels = c("EU", "Germany"))
+# Combine pie charts and legend -------
+main_plot <- plot_grid(upper_row, 
+          get_legend(household_label), 
+          ncol = 1, 
+          rel_heights = c(2,1))
+
+plot_grid(title, main_plot, ncol = 1, rel_heights = c(0.1, 1))
+```
+### Russias importance as gas resource
+
+```{r Gas usage in EU}
+energy_filtered %>% 
+  filter(siec == "Natural gas") %>% 
+  full_join(geodata, by = c("geo_code" = "wb_a2")) %>% 
+  ggplot() +
+  geom_sf(mapping = aes(fill = values/100, geometry = geometry)) + 
+  theme_minimal() +
+  scale_fill_gradient(labels = scales::percent) +
+  labs(title = "Share of energy sources for private households (2019)",
+       fill = "Gas Usage")
+```
+
 
 
 ```{r Gas Import from RU in EU}
+# Filter for gas imported from Russia ------------------------------------------
 gas_from_rus <- gas %>% 
-  mutate(imp_ratio = ifelse(Imports != 0, imp_values / Imports, NA)) %>%  # avoid Inf
+  mutate(imp_ratio = case_when(imp_values == 0 ~ NA_real_,
+                               Imports != 0 & imp_values > 0 ~ imp_values / Imports,
+                               TRUE ~ NA_real_)) %>%  # avoid Inf
   filter(partner_code == "RU" & 
          !(geo_code %in% c("EA","EU27_2020", "EA19"))) %>% 
   group_by(geo, year) %>% 
-  mutate("imported_year" = mean(imp_ratio))
+  mutate("imported_year" = mean(imp_ratio, na.rm = TRUE))
 
+# Draw Map with import_per for a year ------------------------------------------
 gas_from_rus %>% 
   distinct(year, .keep_all = TRUE) %>% 
   filter(year == 2021) %>% 
+  # Join geodata for smaller file size ---------------
   full_join(geodata, by = c("geo_code" = "wb_a2")) %>% 
   ggplot() +
-  geom_sf(mapping = aes(fill = imported_year, geometry = geometry))
+  geom_sf(mapping = aes(fill = imported_year, geometry = geometry)) + 
+  theme_minimal() +
+  scale_fill_gradient(labels = scales::percent) +
+  labs(title = "Percentage of gas imported from Russia (2021)",
+       fill = "")
 ```
+```{r Gas Import from RU in EU}
+gas_import %>% 
+  filter(time > "2020-12-31",
+         !(geo_code %in% c("EA","EU27_2020", "EA19")),
+           partner_code == "RU") %>% 
+  group_by(geo_code) %>% 
+  summarise(imp = sum(imp_values)) %>% 
+  slice_max(imp, n = 10)
+```
+
+
+
+### German gas sources
+
+
+```{r Germanys gas sources}
+# Get gas importers for Germany ------------------------------------------------
+de_gas_sources <- gas %>% 
+  filter(geo_code == "DE",
+         year == 2021,
+         partner != "Total") %>%
+  group_by(partner) %>% 
+  summarise(imp_values = sum(imp_values)) 
+
+de_gas_sources$partner[which(de_gas_sources$imp_values == 0)] <- "Other"
+de_gas_sources$partner <- factor(de_gas_sources$partner)
+
+de_gas_sources %>% 
+  ggplot() +
+  geom_col(aes(x = imp_values, 
+               y = fct_reorder(partner, imp_values))) +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Total imported gas (Terajoule)",
+       y = "Import Countries",
+       title = "Biggest gas importers for Germany (2021)") +
+  theme(axis.title.x = element_text(margin = margin(t=7,r=0,b=0,l=0)),
+        axis.title.y = element_text(margin = margin(t=0,r=7,b=0,l=0)),
+        axis.text.y = element_text(angle = 25))
+  
+```
+
+
+
+
+```{r Russias gas imports}
+gas_from_rus %>% 
+  mutate(Imports = Imports - imp_values) %>% 
+  pivot_longer(cols = c(Imports,imp_values), names_to = "import_type", values_to = "import_value") %>% 
+  filter(geo_code == "DE",
+         year >= 2015) %>% 
+  ggplot() +
+    geom_col(aes(time, import_value, fill = forcats::fct_rev(import_type)),
+             position = "stack") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_discrete(labels = c("Others", "Russia")) + 
+  labs(x = "",
+       y = "Imported Gas (Terajoule)",
+       fill = "Origin",
+       title = "Gas imported to Germany (2015 - 2021)") +
+  theme(axis.title.y = element_text(margin = margin(t=0,r=7,b=0,l=0)))
+```
+
 
 ```{r}
 gas_de <- gas %>% 
@@ -137,30 +327,27 @@ gas_de <- gas %>%
   
 gas_de %>% ggplot() +
   geom_line(aes(time, `Closing Stocks`)) +
-  geom_col(aes(time, `Stock changes - as defined in MOS GAS`))
-  #geom_line(aes(time, Supply))
-
-  
+  geom_col(aes(time, `Stock changes - as defined in MOS GAS`)) +
+  geom_line(aes(time, Exports)) +
+  geom_line(aes(time, Imports)) 
 ```
 
 ```{r}
-head(gas_de)
+#head(gas_de)
+
+gas_de_start <- gas_de %>% 
+  filter(time == "2015-03-01")
 
 gas_de %>% 
-  ggplot() +
-  geom_line(aes(time, `Inland consumption - observed`)) +
-  geom_line(aes(time, Imports))
+  filter(year >= 2015) %>% 
+  mutate(consumption_ratio = `Inland consumption - observed` / lag(`Inland consumption - observed`),
+         imports_ratio = Imports / lag(Imports)) %>% 
+  pivot_longer(cols = c("consumption_ratio", "imports_ratio"), names_to = "type", values_to = "values") %>% 
+  ggplot(aes(time, values)) +
+  geom_line() +
+  geom_smooth() +
+  facet_wrap(vars(type))
 ```
 
 
-
-```{r}
-gas_from_rus %>% 
-  mutate(Imports = Imports - imp_values) %>% 
-  pivot_longer(cols = c(Imports,imp_values), names_to = "import_type", values_to = "import_value") %>% 
-  filter(geo_code == "DE",
-         year >= 2020) %>% 
-  ggplot() +
-    geom_col(aes(time, import_value, fill = forcats::fct_rev(import_type)), position = "stack")
-```
 
